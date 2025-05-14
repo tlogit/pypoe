@@ -21,10 +21,14 @@ def analyze_pdf_with_llama3(pdf_path):
     doc = fitz.open(pdf_path)
     num_pages = len(doc)
 
-    # Check for raw signature tag
+    # Check for signature tags more broadly
     with open(pdf_path, "rb") as f:
         raw_data = f.read()
-        signature_tag_found = b"<</Subtype/page/Type/FillSignData>>" in raw_data
+        signature_tag_found = any(tag in raw_data for tag in [
+            b"<</Subtype/page/Type/FillSignData>>",
+            b"/Sig",
+            b"/Signature"
+        ])
 
     for i in range(num_pages):
         page = doc.load_page(i)
@@ -39,11 +43,18 @@ Instructions:
 - Also look for missing or incomplete sections titled: Reflection, Logbook, CCFO, or Declaration.
 - Mention if a signature is referenced but not filled.
 
-Your task:
-From the text below, output a structured summary of:
-1. Which questions or activities are unanswered.
-2. Whether Reflection, Logbook, CCFO, or Declaration are missing.
-3. If nothing is missing, respond with "All fields appear to be completed."
+Output the results in this format:
+
+Unanswered Questions/Activities:
+- [List here]
+
+Missing Sections:
+- [List here]
+
+Signature Issues:
+- [Mention if a signature is referenced but not filled]
+
+If all fields are completed, respond with: "All fields appear to be completed."
 
 TEXT START
 {text}
@@ -60,12 +71,12 @@ TEXT END
         except Exception as e:
             analysis = f"Error analyzing page {i+1}: {str(e)}"
 
-        # Add signature check
+        # Signature check per page text
         if "signature" in text.lower() and not signature_tag_found:
-            analysis += " Signature mentioned but not filled."
+            analysis += "\nSignature Issues:\n- Signature mentioned but not filled."
             signature_issues.append(i + 1)
 
-        results.append(f"Page {i+1}: {analysis}")
+        results.append(f"<strong>Page {i+1}</strong>:<br>{analysis.replace('\n', '<br>')}")
 
     doc.close()
 

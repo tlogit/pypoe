@@ -1,19 +1,26 @@
 <!doctype html>
 <html>
-  <head><title>POE Result</title></head>
-  <body>
-    <h1>Results for: {{ filename }}</h1>
-    <p>Total pages: {{ summary.total_pages }}</p>
-    <p>Unanswered fields: {{ summary.total_unanswered }}</p>
-    <p>Pages with signature issues: {{ summary.signature_issues }}</p>
+<head>
+  <title>Analysis Results</title>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    .unanswered { color: red; font-weight: bold; }
+    .missing { color: orange; }
+    .signature { color: purple; }
+    .page-report { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Analysis Results for {{ filename }}</h1>
+  <p>Total Pages: {{ summary.total_pages }}</p>
+  {% if summary.signature_issues %}
+    <p class="signature">Signature issues found on pages: {{ summary.signature_issues | join(', ') }}</p>
+  {% endif %}
 
-    <h3>Analysis:</h3>
-    <ul>
-      {% for item in report %}
-        <li>{{ item }}</li>
-      {% endfor %}
-    </ul>
+  {% for page_result in report %}
+    <div class="page-report">{{ page_result|safe }}</div>
+  {% endfor %}
 
-    <a href="{{ url_for('upload_file') }}">Upload another</a>
-  </body>
+  <a href="/">Back to upload</a>
+</body>
 </html>
