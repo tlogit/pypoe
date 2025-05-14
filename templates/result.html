@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+  <head><title>POE Result</title></head>
+  <body>
+    <h1>Results for: {{ filename }}</h1>
+    <p>Total pages: {{ summary.total_pages }}</p>
+    <p>Unanswered fields: {{ summary.total_unanswered }}</p>
+    <p>Pages with signature issues: {{ summary.signature_issues }}</p>
+
+    <h3>Analysis:</h3>
+    <ul>
+      {% for item in report %}
+        <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+
+    <a href="{{ url_for('upload_file') }}">Upload another</a>
+  </body>
+</html>
