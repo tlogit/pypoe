@@ -34,31 +34,40 @@ def analyze_pdf_with_llama3(pdf_path):
         page = doc.load_page(i)
         text = page.get_text()
 
+        # Manual fallback detection
+        unanswered_flags = ["click or tap here", "enter answer here", "type here", "add response", "student to complete"]
+        unanswered_detected = [line.strip() for line in text.lower().splitlines() if any(flag in line for flag in unanswered_flags)]
+
+        # Prompt for LLaMA3
         prompt = f"""
-You are a POE (Portfolio of Evidence) evaluator.
+You are a POE (Portfolio of Evidence) evaluator reviewing a student's submission.
 
 Instructions:
-- Look for unanswered questions (e.g., "Question No. 1") or activities (e.g., "Activity No. 2.1") that have no student input.
-- Unanswered sections may contain text like: "Click or tap here to enter text", "Enter answer here", or be blank under the heading.
-- Also look for missing or incomplete sections titled: Reflection, Logbook, CCFO, or Declaration.
-- Mention if a signature is referenced but not filled.
+- Identify unanswered questions or activities. These may be labeled like "Question No. 1", "Activity 2.1", etc., and considered unanswered if:
+  * They contain text such as "Click or tap here to enter text", "Enter answer here", "Type here", or similar.
+  * They are followed by blank space or no meaningful student input.
+- Identify missing sections such as: Reflection, Logbook, CCFO, or Declaration.
+- Identify if any signature is expected (e.g. labeled "Signature") but not filled.
 
-Output the results in this format:
+Respond ONLY in this exact format, even if empty:
 
 Unanswered Questions/Activities:
-- [List here]
+- ...
 
 Missing Sections:
-- [List here]
+- ...
 
 Signature Issues:
-- [Mention if a signature is referenced but not filled]
+- ...
 
-If all fields are completed, respond with: "All fields appear to be completed."
+If all fields are completed, respond with:
+All fields appear to be completed.
 
-TEXT START
+## Start of Page Text
 {text}
-TEXT END
+## End of Page Text
+
+Do not explain or summarize. Only use the above format.
 """
 
         try:
@@ -68,13 +77,30 @@ TEXT END
                 timeout=60
             )
             analysis = response.json().get("response", "").strip()
+
+            # Fallback if AI output is empty
+            if not analysis:
+                analysis = "No response from model."
+
         except Exception as e:
             analysis = f"Error analyzing page {i+1}: {str(e)}"
 
-        # Signature check per page text
+        # Add manual detections if found
+        if unanswered_detected and "Unanswered Questions/Activities" not in analysis:
+            if "All fields appear to be completed." in analysis:
+                analysis = analysis.replace("All fields appear to be completed.", "")
+            analysis += "\nUnanswered Questions/Activities:\n"
+            for line in unanswered_detected:
+                analysis += f"- Possible unanswered field: '{line}'\n"
+
+        # Additional signature check
         if "signature" in text.lower() and not signature_tag_found:
             analysis += "\nSignature Issues:\n- Signature mentioned but not filled."
             signature_issues.append(i + 1)
+
+        # Log output for debugging
+        print(f"\n=== Page {i+1} ===")
+        print(analysis)
 
         results.append(f"<strong>Page {i+1}</strong>:<br>{analysis.replace('\n', '<br>')}")
 
