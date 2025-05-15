@@ -12,9 +12,9 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'pdf'}
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# --- Function 1: Signature Check via PDF Tags ---
+# --- Signature Detection ---
 def check_signatures(pdf_path):
     signature_issues = []
 
@@ -34,51 +34,79 @@ def check_signatures(pdf_path):
         if "signature" in text and not signature_tag_found:
             signature_issues.append(f"Signature mentioned but not filled on Page {page_number}")
     doc.close()
-
     return signature_issues
 
-# --- Function 2: Analyze PDF Content via LLaMA ---
-def analyze_with_llama(pdf_path):
+# --- Section Extraction for LLaMA ---
+def extract_sections(pdf_path):
     doc = fitz.open(pdf_path)
+    sections = {
+        "Formative": "",
+        "Summative": "",
+        "Reflection": "",
+        "Logbook": "",
+        "CCFO": "",
+        "Declaration": ""
+    }
+
+    current_section = None
+    for page in doc:
+        text = page.get_text().strip()
+        lower_text = text.lower()
+
+        if "formative assessment for" in lower_text:
+            current_section = "Formative"
+        elif "summative assessment" in lower_text or "workplace assessments" in lower_text:
+            current_section = "Summative"
+        elif "reflection" in lower_text:
+            current_section = "Reflection"
+        elif "logbook" in lower_text:
+            current_section = "Logbook"
+        elif "critical cross field outcomes" in lower_text:
+            current_section = "CCFO"
+        elif "declaration of authenticity" in lower_text or "submission & remediation" in lower_text:
+            current_section = "Declaration"
+
+        if current_section:
+            sections[current_section] += "\n\n" + text
+
+    doc.close()
+    return sections
+
+# --- LLaMA Analysis ---
+def analyze_with_llama(pdf_path):
+    sections_text = extract_sections(pdf_path)
     analysis_report = {
         "Unanswered Questions/Activities": [],
         "Missing Sections": []
     }
 
-    for i in range(len(doc)):
-        page = doc[i]
-        text = page.get_text()
-        page_number = i + 1
+    for section, content in sections_text.items():
+        if not content.strip():
+            continue
 
         prompt = f"""
-You are evaluating a learner's Portfolio of Evidence (PoE) PDF.
+You are evaluating the '{section}' section of a Portfolio of Evidence (PoE).
 
-Your task is to carefully analyze the text and identify **specific issues** such as:
-- Unanswered or incomplete questions or activities (e.g., "Question No. 3", "Activity 2.1", etc.)
-- Missing critical sections such as:
-    - Reflection
-    - Logbook
-    - Critical Cross-Field Outcomes (CCFO)
-    - Declaration of Authenticity
-- Use indicators such as:
-    - "Click or tap here to enter text"
-    - "Enter answer here"
-    - Sections present with no input
-    - Obvious gaps in expected learner input
+Your task is to list:
+- Unanswered or incomplete questions or activities (e.g., Question 3.1, Activity 5.2)
+- Entire sections that are present but blank or with placeholder text
 
-Return the result in this exact structure (only list items that apply):
+Look for signs like:
+- "Click or tap here to enter text"
+- "Enter answer here"
+- "Answer to X.X"
+- Blank sections
+
+Respond only in this format (skip any part if there's nothing to report):
 
 Unanswered Questions/Activities:
-- Page {page_number}: Question/Activity Description ➜ Indicator
+- [Item ➜ Why it's considered unanswered]
 
 Missing Sections:
-- Page {page_number}: Section Name ➜ Description of what's missing
-
-If everything is completed on this page, return:
-All fields appear to be completed on Page {page_number}.
+- [Item ➜ Why it's missing]
 
 TEXT START
-{text}
+{content}
 TEXT END
 """
 
@@ -90,20 +118,19 @@ TEXT END
             )
             result = response.json().get("response", "").strip()
         except Exception as e:
-            result = f"Error on page {page_number}: {str(e)}"
+            result = f"Error analyzing {section} section: {str(e)}"
 
-        if "All fields appear to be completed" not in result:
-            # Split into categories manually
+        if "appear completed" not in result.lower():
             for line in result.splitlines():
-                if line.strip().startswith("- Page") and "Question" in line:
-                    analysis_report["Unanswered Questions/Activities"].append(line.strip())
-                elif line.strip().startswith("- Page") and "Section" in line:
-                    analysis_report["Missing Sections"].append(line.strip())
+                if line.strip().startswith("- "):
+                    if "section" in line.lower():
+                        analysis_report["Missing Sections"].append(f"{section}: {line.strip()[2:]}")
+                    else:
+                        analysis_report["Unanswered Questions/Activities"].append(f"{section}: {line.strip()[2:]}")
 
-    doc.close()
     return analysis_report
 
-# --- Flask routes ---
+# --- Flask Routes ---
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
