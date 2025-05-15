@@ -1,7 +1,7 @@
 from flask import Flask, request, render_template, redirect
 import os
 import fitz  # PyMuPDF
-import re
+import requests
 from werkzeug.utils import secure_filename
 
 UPLOAD_FOLDER = 'uploads'
@@ -12,113 +12,98 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'pdf'}
 
-def analyze_pdf_like_chatgpt(pdf_path):
+# --- Function 1: Signature Check via PDF Tags ---
+def check_signatures(pdf_path):
+    signature_issues = []
+
+    with open(pdf_path, "rb") as f:
+        raw_data = f.read()
+        signature_tag_found = any(tag in raw_data for tag in [
+            b"<</Subtype/page/Type/FillSignData>>",
+            b"/Sig",
+            b"/Signature"
+        ])
+
     doc = fitz.open(pdf_path)
+    for i in range(len(doc)):
+        page = doc[i]
+        text = page.get_text().lower()
+        page_number = i + 1
+        if "signature" in text and not signature_tag_found:
+            signature_issues.append(f"Signature mentioned but not filled on Page {page_number}")
+    doc.close()
 
-    results = {
-        "Unanswered Formative Questions": [],
-        "Unanswered Summative Questions": [],
-        "Missing Sections": [],
-        "Signature Issues": []
+    return signature_issues
+
+# --- Function 2: Analyze PDF Content via LLaMA ---
+def analyze_with_llama(pdf_path):
+    doc = fitz.open(pdf_path)
+    analysis_report = {
+        "Unanswered Questions/Activities": [],
+        "Missing Sections": []
     }
-
-    signature_pages_seen = set()
-    sections_found = {
-        "Reflection": False,
-        "Logbook": False,
-        "CCFO": False,
-        "Declaration": False
-    }
-
-    current_section = None
-    seen_placeholders = set()
-
-    def is_placeholder(text):
-        patterns = [
-            r"click or tap here to enter text",
-            r"enter answer here",
-            r"answer to \d+",
-            r"learner response",
-            r"choose\s+an\s+item",
-            r"click or tap to enter a date",
-            r"enter text here"
-        ]
-        return any(re.search(p, text, re.IGNORECASE) for p in patterns)
 
     for i in range(len(doc)):
         page = doc[i]
         text = page.get_text()
-        lines = text.splitlines()
         page_number = i + 1
 
-        for idx, line in enumerate(lines):
-            lower_line = line.lower().strip()
+        prompt = f"""
+You are evaluating a learner's Portfolio of Evidence (PoE) PDF.
 
-            # Detect section
-            if "formative assessment for" in lower_line:
-                current_section = "Formative"
-            elif "summative assessment" in lower_line or "workplace assessments" in lower_line:
-                current_section = "Summative"
-            elif "reflection" in lower_line:
-                current_section = "Reflection"
-                sections_found["Reflection"] = True
-            elif "logbook" in lower_line:
-                current_section = "Logbook"
-                sections_found["Logbook"] = True
-            elif "critical cross field outcomes" in lower_line:
-                current_section = "CCFO"
-                sections_found["CCFO"] = True
-            elif "declaration of authenticity" in lower_line or "submission & remediation" in lower_line:
-                current_section = "Declaration"
-                sections_found["Declaration"] = True
+Your task is to carefully analyze the text and identify **specific issues** such as:
+- Unanswered or incomplete questions or activities (e.g., "Question No. 3", "Activity 2.1", etc.)
+- Missing critical sections such as:
+    - Reflection
+    - Logbook
+    - Critical Cross-Field Outcomes (CCFO)
+    - Declaration of Authenticity
+- Use indicators such as:
+    - "Click or tap here to enter text"
+    - "Enter answer here"
+    - Sections present with no input
+    - Obvious gaps in expected learner input
 
-            # Placeholder fields
-            if is_placeholder(line):
-                context = lines[idx - 1] if idx > 0 else ""
-                field_id = f"{context.strip()}|{page_number}"
+Return the result in this exact structure (only list items that apply):
 
-                if field_id in seen_placeholders:
-                    seen_placeholders.add(field_id)
+Unanswered Questions/Activities:
+- Page {page_number}: Question/Activity Description ➜ Indicator
 
-                item = f"{context.strip()} ➜ {line.strip()} (Page {page_number})"
+Missing Sections:
+- Page {page_number}: Section Name ➜ Description of what's missing
 
-                if current_section == "Formative":
-                    results["Unanswered Formative Questions"].append(item)
-                elif current_section == "Summative":
-                    results["Unanswered Summative Questions"].append(item)
-                elif current_section in ["Reflection", "Logbook", "CCFO", "Declaration"]:
-                    label = {
-                        "Reflection": "Reflection section is incomplete.",
-                        "Logbook": "Logbook entries are incomplete.",
-                        "CCFO": "CCFO evidence is incomplete.",
-                        "Declaration": "Declaration not signed or filled."
-                    }.get(current_section)
-                    if label and label not in results["Missing Sections"]:
-                        results["Missing Sections"].append(label)
+If everything is completed on this page, return:
+All fields appear to be completed on Page {page_number}.
 
-            # Signature fields
-            if "signature" in lower_line and page_number not in signature_pages_seen:
-                if is_placeholder(line):
-                    results["Signature Issues"].append(f"Missing signature on Page {page_number}")
-                    signature_pages_seen.add(page_number)
+TEXT START
+{text}
+TEXT END
+"""
 
-    # If any section was found but not completed, enforce that once
-    for section, seen in sections_found.items():
-        if seen:
-            label = {
-                "Reflection": "Reflection section is incomplete.",
-                "Logbook": "Logbook entries are incomplete.",
-                "CCFO": "CCFO evidence is incomplete.",
-                "Declaration": "Declaration not signed or filled."
-            }[section]
-            if label not in results["Missing Sections"]:
-                results["Missing Sections"].append(label)
+        try:
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={"model": "llama3:8b-q4_K_M", "prompt": prompt, "stream": False},
+                timeout=60
+            )
+            result = response.json().get("response", "").strip()
+        except Exception as e:
+            result = f"Error on page {page_number}: {str(e)}"
+
+        if "All fields appear to be completed" not in result:
+            # Split into categories manually
+            for line in result.splitlines():
+                if line.strip().startswith("- Page") and "Question" in line:
+                    analysis_report["Unanswered Questions/Activities"].append(line.strip())
+                elif line.strip().startswith("- Page") and "Section" in line:
+                    analysis_report["Missing Sections"].append(line.strip())
 
     doc.close()
-    return results
+    return analysis_report
 
+# --- Flask routes ---
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
@@ -128,8 +113,16 @@ def upload_file():
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(filepath)
 
-            report = analyze_pdf_like_chatgpt(filepath)
-            return render_template('result.html', report=report, filename=filename)
+            signature_issues = check_signatures(filepath)
+            llama_report = analyze_with_llama(filepath)
+
+            full_report = {
+                "Unanswered Questions/Activities": llama_report["Unanswered Questions/Activities"],
+                "Missing Sections": llama_report["Missing Sections"],
+                "Signature Issues": signature_issues
+            }
+
+            return render_template('result.html', report=full_report, filename=filename)
 
         return redirect(request.url)
     return render_template('upload.html')
