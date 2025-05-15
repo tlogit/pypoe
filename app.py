@@ -36,7 +36,7 @@ def check_signatures(pdf_path):
     doc.close()
     return signature_issues
 
-# --- Section Extraction for LLaMA ---
+# --- Section Extraction ---
 def extract_sections(pdf_path):
     doc = fitz.open(pdf_path)
     sections = {
@@ -72,7 +72,7 @@ def extract_sections(pdf_path):
     doc.close()
     return sections
 
-# --- LLaMA Analysis ---
+# --- LLaMA-Based Section Analysis ---
 def analyze_with_llama(pdf_path):
     sections_text = extract_sections(pdf_path)
     analysis_report = {
@@ -85,25 +85,26 @@ def analyze_with_llama(pdf_path):
             continue
 
         prompt = f"""
-You are evaluating the '{section}' section of a Portfolio of Evidence (PoE).
+You are an assessor reviewing the '{section}' section of a student's Portfolio of Evidence (PoE). Your job is to identify any **missing or unanswered** content.
 
-Your task is to list:
-- Unanswered or incomplete questions or activities (e.g., Question 3.1, Activity 5.2)
-- Entire sections that are present but blank or with placeholder text
+❗ Your tasks:
+- Detect unanswered questions (e.g., "Question 3.1", "Activity 2.4") with phrases like:
+  - "Click or tap here to enter text"
+  - "Enter answer here"
+  - "Answer to X.X"
+  - Any obvious placeholders
+  - Headings with no responses below them
+- Mark entire sections (e.g., Reflection, Logbook, CCFO, Declaration) as missing if they:
+  - Contain only placeholders or blanks
+  - Are clearly not filled in
 
-Look for signs like:
-- "Click or tap here to enter text"
-- "Enter answer here"
-- "Answer to X.X"
-- Blank sections
-
-Respond only in this format (skip any part if there's nothing to report):
+Respond strictly in this format:
 
 Unanswered Questions/Activities:
-- [Item ➜ Why it's considered unanswered]
+- [Question or Activity] ➜ [Why it is unanswered]
 
 Missing Sections:
-- [Item ➜ Why it's missing]
+- [Section] ➜ [Why it is missing]
 
 TEXT START
 {content}
@@ -114,20 +115,24 @@ TEXT END
             response = requests.post(
                 "http://localhost:11434/api/generate",
                 json={"model": "llama3:8b-q4_K_M", "prompt": prompt, "stream": False},
-                timeout=60
+                timeout=120
             )
             result = response.json().get("response", "").strip()
         except Exception as e:
             result = f"Error analyzing {section} section: {str(e)}"
 
+        # Log output for debugging
+        print(f"\n=== LLaMA OUTPUT FOR SECTION: {section} ===\n{result}\n")
+
+        # Extract bullet points
         if "appear completed" not in result.lower():
             for line in result.splitlines():
-                if line.strip().startswith("- "):
-                    if "section" in line.lower():
-                        analysis_report["Missing Sections"].append(f"{section}: {line.strip()[2:]}")
+                line = line.strip()
+                if line.startswith("- ") and "➜" in line:
+                    if any(key in line.lower() for key in ["reflection", "logbook", "ccfo", "declaration"]):
+                        analysis_report["Missing Sections"].append(f"{section}: {line[2:]}")
                     else:
-                        analysis_report["Unanswered Questions/Activities"].append(f"{section}: {line.strip()[2:]}")
-
+                        analysis_report["Unanswered Questions/Activities"].append(f"{section}: {line[2:]}")
     return analysis_report
 
 # --- Flask Routes ---
@@ -144,9 +149,9 @@ def upload_file():
             llama_report = analyze_with_llama(filepath)
 
             full_report = {
-                "Unanswered Questions/Activities": llama_report["Unanswered Questions/Activities"],
-                "Missing Sections": llama_report["Missing Sections"],
-                "Signature Issues": signature_issues
+                "Unanswered Questions/Activities": llama_report["Unanswered Questions/Activities"] or ["No issues found in this section."],
+                "Missing Sections": llama_report["Missing Sections"] or ["No issues found in this section."],
+                "Signature Issues": signature_issues or ["No issues found in this section."]
             }
 
             return render_template('result.html', report=full_report, filename=filename)
