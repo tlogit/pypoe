@@ -80,7 +80,8 @@ def analyze_pdf_like_chatgpt(pdf_path):
                 field_id = f"{context.strip()}|{page_number}"
 
                 if field_id in seen_placeholders:
-                    seen_placeholders.add(field_id)
+                    continue  # Avoid duplicates
+                seen_placeholders.add(field_id)
 
                 item = f"{context.strip()} ➜ {line.strip()} (Page {page_number})"
 
