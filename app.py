@@ -2,6 +2,7 @@ from flask import Flask, request, render_template, redirect
 import os
 import fitz  # PyMuPDF
 from werkzeug.utils import secure_filename
+import re
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf'}
