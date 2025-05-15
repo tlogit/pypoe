@@ -22,7 +22,8 @@ def check_signatures(pdf_path):
         signature_tag_found = any(tag in raw_data for tag in [
             b"<</Subtype/page/Type/FillSignData>>",
             b"/Sig",
-            b"/Signature"
+            b"/Signature",
+            b"/FillSignData"
         ])
     doc = fitz.open(pdf_path)
     for i in range(len(doc)):
