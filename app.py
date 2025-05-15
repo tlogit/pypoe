@@ -1,8 +1,7 @@
-from flask import Flask, request, render_template, redirect, url_for
+from flask import Flask, request, render_template, redirect
 import os
 import fitz  # PyMuPDF
 from werkzeug.utils import secure_filename
-import requests
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf'}
@@ -14,104 +13,59 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def analyze_pdf_with_llama3(pdf_path):
-    results = []
-    signature_issues = []
-
+def analyze_pdf_like_chatgpt(pdf_path):
     doc = fitz.open(pdf_path)
-    num_pages = len(doc)
-
-    # Check for signature tags more broadly
-    with open(pdf_path, "rb") as f:
-        raw_data = f.read()
-        signature_tag_found = any(tag in raw_data for tag in [
-            b"<</Subtype/page/Type/FillSignData>>",
-            b"/Sig",
-            b"/Signature"
-        ])
-
-    for i in range(num_pages):
-        page = doc.load_page(i)
-        text = page.get_text()
-
-        # Manual fallback detection
-        unanswered_flags = ["click or tap here", "enter answer here", "type here", "add response", "student to complete"]
-        unanswered_detected = [line.strip() for line in text.lower().splitlines() if any(flag in line for flag in unanswered_flags)]
-
-        # Prompt for LLaMA3
-        prompt = f"""
-You are a POE (Portfolio of Evidence) evaluator reviewing a student's submission.
-
-Instructions:
-- Identify unanswered questions or activities. These may be labeled like "Question No. 1", "Activity 2.1", etc., and considered unanswered if:
-  * They contain text such as "Click or tap here to enter text", "Enter answer here", "Type here", or similar.
-  * They are followed by blank space or no meaningful student input.
-- Identify missing sections such as: Reflection, Logbook, CCFO, or Declaration.
-- Identify if any signature is expected (e.g. labeled "Signature") but not filled.
-
-Respond ONLY in this exact format, even if empty:
-
-Unanswered Questions/Activities:
-- ...
-
-Missing Sections:
-- ...
-
-Signature Issues:
-- ...
-
-If all fields are completed, respond with:
-All fields appear to be completed.
-
-## Start of Page Text
-{text}
-## End of Page Text
-
-Do not explain or summarize. Only use the above format.
-"""
-
-        try:
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json={"model": "llama3:8b-q4_K_M", "prompt": prompt, "stream": False},
-                timeout=60
-            )
-            analysis = response.json().get("response", "").strip()
-
-            # Fallback if AI output is empty
-            if not analysis:
-                analysis = "No response from model."
-
-        except Exception as e:
-            analysis = f"Error analyzing page {i+1}: {str(e)}"
-
-        # Add manual detections if found
-        if unanswered_detected and "Unanswered Questions/Activities" not in analysis:
-            if "All fields appear to be completed." in analysis:
-                analysis = analysis.replace("All fields appear to be completed.", "")
-            analysis += "\nUnanswered Questions/Activities:\n"
-            for line in unanswered_detected:
-                analysis += f"- Possible unanswered field: '{line}'\n"
-
-        # Additional signature check
-        if "signature" in text.lower() and not signature_tag_found:
-            analysis += "\nSignature Issues:\n- Signature mentioned but not filled."
-            signature_issues.append(i + 1)
-
-        # Log output for debugging
-        print(f"\n=== Page {i+1} ===")
-        print(analysis)
-
-        results.append(f"<strong>Page {i+1}</strong>:<br>{analysis.replace('\n', '<br>')}")
-
-    doc.close()
-
-    summary = {
-        "total_pages": num_pages,
-        "signature_issues": signature_issues
+    results = {
+        "Unanswered Questions/Activities": [],
+        "Missing Sections": [],
+        "Signature Issues": []
     }
 
-    return summary, results
+    def is_blank_or_placeholder(text):
+        patterns = [
+            r"click or tap here to enter text",
+            r"enter answer here",
+            r"answer to \d+\.\d*",
+            r"learner response",
+            r"click or tap to enter a date",
+            r"choose\s+an\s+item",
+            r"enter text here",
+        ]
+        return any(re.search(p, text, re.IGNORECASE) for p in patterns)
+
+    def extract_unanswered_questions(text, label):
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if is_blank_or_placeholder(line):
+                context = lines[i-1].strip() if i > 0 else "?"
+                results["Unanswered Questions/Activities"].append(f"{label}: {context} ➜ {line.strip()}")
+
+    for i in range(len(doc)):
+        page = doc[i]
+        text = page.get_text()
+        page_number = i + 1
+
+        # Check for unanswered fields
+        if re.search(r"(question|activity|answer)\s+no?\.?", text, re.IGNORECASE) or is_blank_or_placeholder(text):
+            extract_unanswered_questions(text, f"Page {page_number}")
+
+        # Signature issues
+        if "signature" in text.lower():
+            if re.search(r"signature\s*:?[\s\n]*$", text.lower()) or is_blank_or_placeholder(text):
+                results["Signature Issues"].append(f"Page {page_number}: Signature mentioned but not filled.")
+
+        # Missing sections
+        if "reflection" in text.lower() and "enter answer here" in text.lower():
+            results["Missing Sections"].append("Reflection is not completed")
+        if "logbook" in text.lower() and "enter answer here" in text.lower():
+            results["Missing Sections"].append("Logbook is not completed")
+        if "critical cross field outcomes" in text.lower() and "enter answer here" in text.lower():
+            results["Missing Sections"].append("CCFO outcomes are not completed")
+        if "declaration" in text.lower() and is_blank_or_placeholder(text):
+            results["Missing Sections"].append("Declaration section not filled")
+
+    doc.close()
+    return results
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
@@ -122,12 +76,11 @@ def upload_file():
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(filepath)
 
-            summary, report = analyze_pdf_with_llama3(filepath)
-            return render_template('result.html', report=report, filename=filename, summary=summary)
+            report = analyze_pdf_like_chatgpt(filepath)
+            return render_template('result.html', report=report, filename=filename)
 
         return redirect(request.url)
-
     return render_template('upload.html')
 
 if __name__ == '__main__':
-    app.run(debug=True, host="192.168.0.205")
+    app.run(debug=True, host='192.168.0.205')

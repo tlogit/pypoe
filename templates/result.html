@@ -1,26 +1,24 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 <head>
-  <title>Analysis Results</title>
-  <style>
-    body { font-family: Arial, sans-serif; }
-    .unanswered { color: red; font-weight: bold; }
-    .missing { color: orange; }
-    .signature { color: purple; }
-    .page-report { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
-  </style>
+    <title>PoE Analysis Result</title>
 </head>
 <body>
-  <h1>Analysis Results for {{ filename }}</h1>
-  <p>Total Pages: {{ summary.total_pages }}</p>
-  {% if summary.signature_issues %}
-    <p class="signature">Signature issues found on pages: {{ summary.signature_issues | join(', ') }}</p>
-  {% endif %}
+    <h1>Results for {{ filename }}</h1>
 
-  {% for page_result in report %}
-    <div class="page-report">{{ page_result|safe }}</div>
-  {% endfor %}
+    {% for category, items in report.items() %}
+        <h2>{{ category }}</h2>
+        {% if items %}
+            <ul>
+                {% for item in items %}
+                    <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p><em>No issues found in this category.</em></p>
+        {% endif %}
+    {% endfor %}
 
-  <a href="/">Back to upload</a>
+    <a href="/">← Upload another file</a>
 </body>
 </html>
