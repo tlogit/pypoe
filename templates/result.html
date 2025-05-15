@@ -1,13 +1,13 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PoE Analysis Result</title>
+    <title>Analysis Results</title>
 </head>
 <body>
-    <h1>Results for {{ filename }}</h1>
+    <h1>Analysis for {{ filename }}</h1>
 
-    {% for category, items in report.items() %}
-        <h2>{{ category }}</h2>
+    {% for section, items in report.items() %}
+        <h2>{{ section }}</h2>
         {% if items %}
             <ul>
                 {% for item in items %}
@@ -15,10 +15,11 @@
                 {% endfor %}
             </ul>
         {% else %}
-            <p><em>No issues found in this category.</em></p>
+            <p><em>No issues found in this section.</em></p>
         {% endif %}
     {% endfor %}
 
-    <a href="/">← Upload another file</a>
+    <br>
+    <a href="/">Upload another file</a>
 </body>
 </html>

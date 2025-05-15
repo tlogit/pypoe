@@ -16,54 +16,71 @@ def allowed_file(filename):
 
 def analyze_pdf_like_chatgpt(pdf_path):
     doc = fitz.open(pdf_path)
+
     results = {
-        "Unanswered Questions/Activities": [],
+        "Unanswered Formative Questions": [],
+        "Unanswered Summative Questions": [],
         "Missing Sections": [],
         "Signature Issues": []
     }
 
-    def is_blank_or_placeholder(text):
+    def is_placeholder(text):
         patterns = [
             r"click or tap here to enter text",
             r"enter answer here",
-            r"answer to \d+\.\d*",
+            r"answer to \d+",
             r"learner response",
-            r"click or tap to enter a date",
             r"choose\s+an\s+item",
-            r"enter text here",
+            r"click or tap to enter a date",
+            r"enter text here"
         ]
         return any(re.search(p, text, re.IGNORECASE) for p in patterns)
 
-    def extract_unanswered_questions(text, label):
-        lines = text.splitlines()
-        for i, line in enumerate(lines):
-            if is_blank_or_placeholder(line):
-                context = lines[i-1].strip() if i > 0 else "?"
-                results["Unanswered Questions/Activities"].append(f"{label}: {context} ➜ {line.strip()}")
-
+    current_section = None
     for i in range(len(doc)):
         page = doc[i]
         text = page.get_text()
+        lines = text.splitlines()
         page_number = i + 1
 
-        # Check for unanswered fields
-        if re.search(r"(question|activity|answer)\s+no?\.?", text, re.IGNORECASE) or is_blank_or_placeholder(text):
-            extract_unanswered_questions(text, f"Page {page_number}")
+        for idx, line in enumerate(lines):
+            lower_line = line.lower().strip()
 
-        # Signature issues
-        if "signature" in text.lower():
-            if re.search(r"signature\s*:?[\s\n]*$", text.lower()) or is_blank_or_placeholder(text):
-                results["Signature Issues"].append(f"Page {page_number}: Signature mentioned but not filled.")
+            # Detect section context
+            if "formative assessment for" in lower_line:
+                current_section = "Formative"
+            elif "summative assessment" in lower_line or "workplace assessments" in lower_line:
+                current_section = "Summative"
+            elif "reflection" in lower_line:
+                current_section = "Reflection"
+            elif "logbook" in lower_line:
+                current_section = "Logbook"
+            elif "critical cross field outcomes" in lower_line:
+                current_section = "CCFO"
+            elif "declaration of authenticity" in lower_line or "submission & remediation" in lower_line:
+                current_section = "Declaration"
+            elif "signature" in lower_line:
+                current_section = "Signature"
 
-        # Missing sections
-        if "reflection" in text.lower() and "enter answer here" in text.lower():
-            results["Missing Sections"].append("Reflection is not completed")
-        if "logbook" in text.lower() and "enter answer here" in text.lower():
-            results["Missing Sections"].append("Logbook is not completed")
-        if "critical cross field outcomes" in text.lower() and "enter answer here" in text.lower():
-            results["Missing Sections"].append("CCFO outcomes are not completed")
-        if "declaration" in text.lower() and is_blank_or_placeholder(text):
-            results["Missing Sections"].append("Declaration section not filled")
+            # Check for unanswered fields
+            if is_placeholder(line):
+                context = lines[idx - 1] if idx > 0 else "?"
+                item = f"{context.strip()} ➜ {line.strip()} (Page {page_number})"
+
+                if current_section == "Formative":
+                    results["Unanswered Formative Questions"].append(item)
+                elif current_section == "Summative":
+                    results["Unanswered Summative Questions"].append(item)
+                elif current_section == "Reflection":
+                    results["Missing Sections"].append("Reflection section is incomplete.")
+                elif current_section == "Logbook":
+                    results["Missing Sections"].append("Logbook entries are incomplete.")
+                elif current_section == "CCFO":
+                    results["Missing Sections"].append("CCFO evidence is incomplete.")
+                elif current_section == "Declaration":
+                    results["Missing Sections"].append("Declaration not signed or filled.")
+                elif current_section == "Signature":
+                    results["Signature Issues"].append(f"Signature field not filled on Page {page_number}.")
 
     doc.close()
     return results
