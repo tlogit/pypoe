@@ -1,8 +1,8 @@
 from flask import Flask, request, render_template, redirect
 import os
 import fitz  # PyMuPDF
-from werkzeug.utils import secure_filename
 import re
+from werkzeug.utils import secure_filename
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf'}
@@ -24,6 +24,17 @@ def analyze_pdf_like_chatgpt(pdf_path):
         "Signature Issues": []
     }
 
+    signature_pages_seen = set()
+    sections_found = {
+        "Reflection": False,
+        "Logbook": False,
+        "CCFO": False,
+        "Declaration": False
+    }
+
+    current_section = None
+    seen_placeholders = set()
+
     def is_placeholder(text):
         patterns = [
             r"click or tap here to enter text",
@@ -36,7 +47,6 @@ def analyze_pdf_like_chatgpt(pdf_path):
         ]
         return any(re.search(p, text, re.IGNORECASE) for p in patterns)
 
-    current_section = None
     for i in range(len(doc)):
         page = doc[i]
         text = page.get_text()
@@ -46,41 +56,66 @@ def analyze_pdf_like_chatgpt(pdf_path):
         for idx, line in enumerate(lines):
             lower_line = line.lower().strip()
 
-            # Detect section context
+            # Detect section
             if "formative assessment for" in lower_line:
                 current_section = "Formative"
             elif "summative assessment" in lower_line or "workplace assessments" in lower_line:
                 current_section = "Summative"
             elif "reflection" in lower_line:
                 current_section = "Reflection"
+                sections_found["Reflection"] = True
             elif "logbook" in lower_line:
                 current_section = "Logbook"
+                sections_found["Logbook"] = True
             elif "critical cross field outcomes" in lower_line:
                 current_section = "CCFO"
+                sections_found["CCFO"] = True
             elif "declaration of authenticity" in lower_line or "submission & remediation" in lower_line:
                 current_section = "Declaration"
-            elif "signature" in lower_line:
-                current_section = "Signature"
+                sections_found["Declaration"] = True
 
-            # Check for unanswered fields
+            # Placeholder fields
             if is_placeholder(line):
-                context = lines[idx - 1] if idx > 0 else "?"
+                context = lines[idx - 1] if idx > 0 else ""
+                field_id = f"{context.strip()}|{page_number}"
+
+                if field_id in seen_placeholders:
+                    continue  # Avoid duplicates
+                seen_placeholders.add(field_id)
+
                 item = f"{context.strip()} ➜ {line.strip()} (Page {page_number})"
 
                 if current_section == "Formative":
                     results["Unanswered Formative Questions"].append(item)
                 elif current_section == "Summative":
                     results["Unanswered Summative Questions"].append(item)
-                elif current_section == "Reflection":
-                    results["Missing Sections"].append("Reflection section is incomplete.")
-                elif current_section == "Logbook":
-                    results["Missing Sections"].append("Logbook entries are incomplete.")
-                elif current_section == "CCFO":
-                    results["Missing Sections"].append("CCFO evidence is incomplete.")
-                elif current_section == "Declaration":
-                    results["Missing Sections"].append("Declaration not signed or filled.")
-                elif current_section == "Signature":
-                    results["Signature Issues"].append(f"Signature field not filled on Page {page_number}.")
+                elif current_section in ["Reflection", "Logbook", "CCFO", "Declaration"]:
+                    label = {
+                        "Reflection": "Reflection section is incomplete.",
+                        "Logbook": "Logbook entries are incomplete.",
+                        "CCFO": "CCFO evidence is incomplete.",
+                        "Declaration": "Declaration not signed or filled."
+                    }.get(current_section)
+                    if label and label not in results["Missing Sections"]:
+                        results["Missing Sections"].append(label)
+
+            # Signature fields
+            if "signature" in lower_line and page_number not in signature_pages_seen:
+                if is_placeholder(line):
+                    results["Signature Issues"].append(f"Missing signature on Page {page_number}")
+                    signature_pages_seen.add(page_number)
+
+    # If any section was found but not completed, enforce that once
+    for section, seen in sections_found.items():
+        if seen:
+            label = {
+                "Reflection": "Reflection section is incomplete.",
+                "Logbook": "Logbook entries are incomplete.",
+                "CCFO": "CCFO evidence is incomplete.",
+                "Declaration": "Declaration not signed or filled."
+            }[section]
+            if label not in results["Missing Sections"]:
+                results["Missing Sections"].append(label)
 
     doc.close()
     return results
