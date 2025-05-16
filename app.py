@@ -7,23 +7,17 @@ from langchain.prompts import PromptTemplate
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf'}
-
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'pdf'}
-# --- Signature detection ---
+# ---------- Signature Detection ----------
 def check_signatures(pdf_path):
     signature_issues = []
     with open(pdf_path, "rb") as f:
         raw_data = f.read()
         signature_tag_found = any(tag in raw_data for tag in [
-            b"<</Subtype/page/Type/FillSignData>>",
-            b"/Sig",
-            b"/Signature",
-            b"/FillSignData"
+            b"<</Subtype/page/Type/FillSignData>>", b"/Sig", b"/Signature", b"/FillSignData"
         ])
     doc = fitz.open(pdf_path)
     for i in range(len(doc)):
@@ -35,7 +29,7 @@ def check_signatures(pdf_path):
     doc.close()
     return signature_issues
 
-# --- Section extraction ---
+# ---------- Section Extraction ----------
 def extract_sections(pdf_path):
     doc = fitz.open(pdf_path)
     sections = {
@@ -46,94 +40,116 @@ def extract_sections(pdf_path):
         "CCFO": "",
         "Declaration": ""
     }
-
     current_section = None
     for page in doc:
         text = page.get_text().strip()
-        lower_text = text.lower()
-
-        if "formative assessment for" in lower_text:
+        lower = text.lower()
+        if "formative assessment for" in lower:
             current_section = "Formative"
-        elif "summative assessment" in lower_text or "workplace assessments" in lower_text:
+        elif "summative assessment" in lower or "workplace assessments" in lower:
             current_section = "Summative"
-        elif "reflection" in lower_text:
+        elif "reflection" in lower:
             current_section = "Reflection"
-        elif "logbook" in lower_text:
+        elif "logbook" in lower:
             current_section = "Logbook"
-        elif "critical cross field outcomes" in lower_text:
+        elif "critical cross field outcomes" in lower:
             current_section = "CCFO"
-        elif "declaration of authenticity" in lower_text or "submission & remediation" in lower_text:
+        elif "declaration of authenticity" in lower or "submission & remediation" in lower:
             current_section = "Declaration"
-
         if current_section:
             sections[current_section] += "\n\n" + text
-
     doc.close()
     return sections
 
-# --- LangChain prompt template ---
+# ---------- Chunking ----------
+def chunk_text(text, chunk_size=4000, overlap=250):
+    words = text.split()
+    chunks = []
+    start = 0
+    while start < len(words):
+        chunk = " ".join(words[start:start+chunk_size])
+        chunks.append(chunk)
+        start += chunk_size - overlap
+    return chunks
+
+# ---------- Confidence Scoring ----------
+def determine_confidence(text):
+    text = text.lower()
+    if any(k in text for k in ["click or tap", "enter answer here", "answer to", "type here"]):
+        return "High"
+    elif any(k in text for k in ["blank", "no input", "not filled", "empty"]):
+        return "Medium"
+    return "Low"
+
+# ---------- LLaMA Analysis ----------
 PROMPT_TEMPLATE = PromptTemplate.from_template("""
-You are an assessor reviewing the '{section}' section of a student's Portfolio of Evidence (PoE).
+You are an assessor reviewing a section of a student's Portfolio of Evidence (PoE).
 
-❗ Your tasks:
-- Detect unanswered or incomplete questions (e.g., "Question 3.1", "Activity 2.4") if they contain:
-  - "Click or tap here to enter text"
-  - "Enter answer here"
-  - "Answer to X.X"
-  - Any placeholder
-  - Heading without a learner response
+Identify:
+- Unanswered or incomplete questions (e.g., "Question 3.1", "Activity 2.4")
+- Entire sections that are present but blank (e.g., Reflection, Logbook, CCFO, Declaration)
 
-- Identify fully missing sections (like Reflection, Logbook, Declaration, CCFO) if:
-  - They are present but entirely blank or just contain placeholders
+Look for signs like:
+- "Click or tap here to enter text"
+- "Enter answer here"
+- "Answer to X.X"
+- Blank or placeholder text
+- Headings with no learner input
 
-Format your answer as:
+Only return:
 
 Unanswered Questions/Activities:
-- [Question/Activity] ➜ [Why it's missing]
+- [Item] ➜ [Reason]
 
 Missing Sections:
-- [Section] ➜ [Why it's missing]
-
-Only output these bullet lists. Do not summarize or explain.
+- [Item] ➜ [Reason]
 
 TEXT START
 {content}
 TEXT END
 """)
 
-# --- LLaMA with LangChain ---
 def analyze_with_llama(pdf_path):
     sections = extract_sections(pdf_path)
-    analysis_report = {
+    analysis = {
         "Unanswered Questions/Activities": [],
         "Missing Sections": []
     }
-
-    llama = Ollama(model="llama3")  # Use your local model name
+    llama = Ollama(model="llama3")
 
     for section, content in sections.items():
         if not content.strip():
             continue
+        chunks = chunk_text(content)
+        seen = set()
 
-        prompt = PROMPT_TEMPLATE.format(section=section, content=content[:6000])  # Avoid overflow
+        for i, chunk in enumerate(chunks):
+            prompt = PROMPT_TEMPLATE.format(section=section, content=chunk)
+            try:
+                result = llama(prompt).strip()
+                print(f"\n=== LLaMA OUTPUT for {section} Chunk {i+1} ===\n{result}\n")
+            except Exception as e:
+                result = f"Error: {e}"
 
-        try:
-            result = llama(prompt).strip()
-            print(f"\n=== LLaMA OUTPUT FOR SECTION: {section} ===\n{result}\n")
-        except Exception as e:
-            result = f"Error analyzing {section}: {str(e)}"
-
-        if "appear completed" not in result.lower():
             for line in result.splitlines():
-                line = line.strip()
-                if line.startswith("- ") and "➜" in line:
-                    if any(keyword in line.lower() for keyword in ["reflection", "logbook", "ccfo", "declaration"]):
-                        analysis_report["Missing Sections"].append(f"{section}: {line[2:]}")
+                if line.strip().startswith("- ") and "➜" in line:
+                    clean_line = f"{section}: {line.strip()[2:]}"
+                    if clean_line in seen:
+                        continue
+                    seen.add(clean_line)
+                    conf = determine_confidence(line)
+                    entry = f"{clean_line} [Confidence: {conf}]"
+                    if any(k in line.lower() for k in ["reflection", "logbook", "ccfo", "declaration"]):
+                        analysis["Missing Sections"].append(entry)
                     else:
-                        analysis_report["Unanswered Questions/Activities"].append(f"{section}: {line[2:]}")
-    return analysis_report
+                        analysis["Unanswered Questions/Activities"].append(entry)
+    return analysis
 
-# --- Flask routes ---
+# ---------- File Type Check ----------
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'pdf'}
+
+# ---------- Flask Routes ----------
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
@@ -147,13 +163,12 @@ def upload_file():
             llama_report = analyze_with_llama(filepath)
 
             full_report = {
-                "Unanswered Questions/Activities": llama_report["Unanswered Questions/Activities"] or ["No issues found in this section."],
-                "Missing Sections": llama_report["Missing Sections"] or ["No issues found in this section."],
-                "Signature Issues": signature_issues or ["No issues found in this section."]
+                "Unanswered Questions/Activities": llama_report["Unanswered Questions/Activities"] or ["No issues found."],
+                "Missing Sections": llama_report["Missing Sections"] or ["No issues found."],
+                "Signature Issues": signature_issues or ["No issues found."]
             }
 
             return render_template('result.html', report=full_report, filename=filename)
-
         return redirect(request.url)
     return render_template('upload.html')
 

@@ -6,8 +6,8 @@
 <body>
     <h1>Analysis for {{ filename }}</h1>
 
-    {% for category, items in report.items() %}
-        <h2>{{ category }}</h2>
+    {% for section, items in report.items() %}
+        <h2>{{ section }}</h2>
         {% if items %}
             <ul>
                 {% for item in items %}
