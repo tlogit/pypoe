@@ -17,7 +17,8 @@ def check_signatures(pdf_path):
     with open(pdf_path, "rb") as f:
         raw_data = f.read()
         signature_tag_found = any(tag in raw_data for tag in [
-            b"<</Subtype/page/Type/FillSignData>>", b"/Sig", b"/Signature", b"/FillSignData"
+            b"<</Subtype/page/Type/FillSignData>>",
+            b"/Sig", b"/Signature", b"/FillSignData"
         ])
     doc = fitz.open(pdf_path)
     for i in range(len(doc)):
@@ -67,7 +68,7 @@ def chunk_text(text, chunk_size=4000, overlap=250):
     chunks = []
     start = 0
     while start < len(words):
-        chunk = " ".join(words[start:start+chunk_size])
+        chunk = " ".join(words[start:start + chunk_size])
         chunks.append(chunk)
         start += chunk_size - overlap
     return chunks
@@ -75,40 +76,37 @@ def chunk_text(text, chunk_size=4000, overlap=250):
 # ---------- Confidence Scoring ----------
 def determine_confidence(text):
     text = text.lower()
-    if any(k in text for k in ["click or tap", "enter answer here", "answer to", "type here"]):
+    high_conf = ["click or tap", "enter answer here", "answer to", "type here", "student to complete", "learner to complete"]
+    medium_conf = ["blank", "no input", "not filled", "missing", "empty", "not provided"]
+    if any(p in text for p in high_conf):
         return "High"
-    elif any(k in text for k in ["blank", "no input", "not filled", "empty"]):
+    elif any(p in text for p in medium_conf):
         return "Medium"
     return "Low"
 
-# ---------- LLaMA Analysis ----------
+# ---------- LLaMA Prompt ----------
 PROMPT_TEMPLATE = PromptTemplate.from_template("""
-You are an assessor reviewing a section of a student's Portfolio of Evidence (PoE).
+You are an expert assessor analyzing a section of a student's Portfolio of Evidence (PoE).
 
-Identify:
-- Unanswered or incomplete questions (e.g., "Question 3.1", "Activity 2.4")
-- Entire sections that are present but blank (e.g., Reflection, Logbook, CCFO, Declaration)
+Your tasks:
+1. Identify unanswered or incomplete questions or activities (e.g., "Question 3.1", "Activity 2.4", "Task 5").
+   Look for: "Click or tap here to enter text", "Enter answer here", blanks, headings with no input, etc.
+2. Identify missing or placeholder-only sections like Reflection, Logbook, CCFO, Declaration.
 
-Look for signs like:
-- "Click or tap here to enter text"
-- "Enter answer here"
-- "Answer to X.X"
-- Blank or placeholder text
-- Headings with no learner input
-
-Only return:
+Respond ONLY in this format:
 
 Unanswered Questions/Activities:
-- [Item] ➜ [Reason]
+- [Label] ➜ [Why it's incomplete]
 
 Missing Sections:
-- [Item] ➜ [Reason]
+- [Section] ➜ [Why it's missing]
 
 TEXT START
 {content}
 TEXT END
 """)
 
+# ---------- Analysis with LLaMA ----------
 def analyze_with_llama(pdf_path):
     sections = extract_sections(pdf_path)
     analysis = {
@@ -116,29 +114,27 @@ def analyze_with_llama(pdf_path):
         "Missing Sections": []
     }
     llama = Ollama(model="llama3")
-
     for section, content in sections.items():
         if not content.strip():
             continue
         chunks = chunk_text(content)
         seen = set()
-
         for i, chunk in enumerate(chunks):
             prompt = PROMPT_TEMPLATE.format(section=section, content=chunk)
             try:
                 result = llama(prompt).strip()
-                print(f"\n=== LLaMA OUTPUT for {section} Chunk {i+1} ===\n{result}\n")
+                print(f"\n=== LLaMA OUTPUT: {section} | Chunk {i+1} ===\n{result}\n")
             except Exception as e:
                 result = f"Error: {e}"
 
             for line in result.splitlines():
                 if line.strip().startswith("- ") and "➜" in line:
-                    clean_line = f"{section}: {line.strip()[2:]}"
+                    clean_line = f"[{section}] {line.strip()[2:]}"
                     if clean_line in seen:
                         continue
                     seen.add(clean_line)
-                    conf = determine_confidence(line)
-                    entry = f"{clean_line} [Confidence: {conf}]"
+                    confidence = determine_confidence(line)
+                    entry = f"{clean_line} [Confidence: {confidence}]"
                     if any(k in line.lower() for k in ["reflection", "logbook", "ccfo", "declaration"]):
                         analysis["Missing Sections"].append(entry)
                     else:
@@ -162,13 +158,23 @@ def upload_file():
             signature_issues = check_signatures(filepath)
             llama_report = analyze_with_llama(filepath)
 
+            total_unanswered = len(llama_report["Unanswered Questions/Activities"])
+            total_missing = len(llama_report["Missing Sections"])
+            total_signatures = len(signature_issues)
+
             full_report = {
                 "Unanswered Questions/Activities": llama_report["Unanswered Questions/Activities"] or ["No issues found."],
                 "Missing Sections": llama_report["Missing Sections"] or ["No issues found."],
                 "Signature Issues": signature_issues or ["No issues found."]
             }
 
-            return render_template('result.html', report=full_report, filename=filename)
+            summary = {
+                "Total Unanswered": total_unanswered,
+                "Total Missing Sections": total_missing,
+                "Total Signature Issues": total_signatures
+            }
+
+            return render_template('result.html', report=full_report, filename=filename, summary=summary)
         return redirect(request.url)
     return render_template('upload.html')
 

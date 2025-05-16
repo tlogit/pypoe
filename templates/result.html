@@ -6,8 +6,15 @@
 <body>
     <h1>Analysis for {{ filename }}</h1>
 
-    {% for section, items in report.items() %}
-        <h2>{{ section }}</h2>
+    <h2>Summary</h2>
+    <ul>
+        <li>Total Unanswered Questions/Activities: {{ summary["Total Unanswered"] }}</li>
+        <li>Total Missing Sections: {{ summary["Total Missing Sections"] }}</li>
+        <li>Total Signature Issues: {{ summary["Total Signature Issues"] }}</li>
+    </ul>
+
+    {% for category, items in report.items() %}
+        <h2>{{ category }}</h2>
         {% if items %}
             <ul>
                 {% for item in items %}
