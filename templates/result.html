@@ -15,15 +15,11 @@
 
     {% for category, items in report.items() %}
         <h2>{{ category }}</h2>
-        {% if items %}
-            <ul>
-                {% for item in items %}
-                    <li>{{ item }}</li>
-                {% endfor %}
-            </ul>
-        {% else %}
-            <p><em>No issues found in this section.</em></p>
-        {% endif %}
+        <ul>
+            {% for item in items %}
+                <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
     {% endfor %}
 
     <br>

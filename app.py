@@ -11,13 +11,13 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# ---------------- Signature Check ----------------
 def check_signatures(pdf_path):
     signature_issues = []
     with open(pdf_path, "rb") as f:
         raw_data = f.read()
         signature_tag_found = any(tag in raw_data for tag in [
-            b"<</Subtype/page/Type/FillSignData>>",
-            b"/Sig", b"/Signature", b"/FillSignData"
+            b"<</Subtype/page/Type/FillSignData>>", b"/Sig", b"/Signature", b"/FillSignData"
         ])
     doc = fitz.open(pdf_path)
     for i in range(len(doc)):
@@ -29,6 +29,7 @@ def check_signatures(pdf_path):
     doc.close()
     return signature_issues
 
+# ---------------- Section Extraction ----------------
 def extract_sections(pdf_path):
     doc = fitz.open(pdf_path)
     sections = {
@@ -60,6 +61,7 @@ def extract_sections(pdf_path):
     doc.close()
     return sections
 
+# ---------------- Chunking ----------------
 def chunk_text(text, chunk_size=4000, overlap=250):
     words = text.split()
     chunks = []
@@ -70,6 +72,7 @@ def chunk_text(text, chunk_size=4000, overlap=250):
         start += chunk_size - overlap
     return chunks
 
+# ---------------- Confidence Scoring ----------------
 def determine_confidence(text):
     text = text.lower()
     high_conf = ["click or tap", "enter answer here", "answer to", "type here", "student to complete", "learner to complete"]
@@ -80,13 +83,14 @@ def determine_confidence(text):
         return "Medium"
     return "Low"
 
+# ---------------- Prompt Template ----------------
 PROMPT_TEMPLATE = PromptTemplate.from_template("""
 You are an expert assessor analyzing a section of a student's Portfolio of Evidence (PoE).
 
 Your tasks:
 1. Identify unanswered or incomplete questions or activities (e.g., "Question 3.1", "Activity 2.4", "Task 5").
    Look for: "Click or tap here to enter text", "Enter answer here", blanks, headings with no input, etc.
-2. Identify missing or placeholder-only sections like Reflection, Logbook, CCFO(critical cross field outcomes), Declaration.
+2. Identify missing or placeholder-only sections like Reflection, Logbook, CCFO (Critical Cross Field Outcomes), or Declaration.
 
 Respond ONLY in this format:
 
@@ -101,6 +105,7 @@ TEXT START
 TEXT END
 """)
 
+# ---------------- LLaMA-Powered Analyzer ----------------
 def analyze_with_llama(pdf_path):
     sections = extract_sections(pdf_path)
     analysis = {
@@ -135,9 +140,11 @@ def analyze_with_llama(pdf_path):
                         analysis["Unanswered Questions/Activities"].append(entry)
     return analysis
 
+# ---------------- File Type Check ----------------
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'pdf'}
 
+# ---------------- Flask Routes ----------------
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
