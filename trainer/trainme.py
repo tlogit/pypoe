@@ -1,65 +1,69 @@
 import os
+import re
+import json
 import datetime
 import fitz  # PyMuPDF
-from transformers import LlamaTokenizer, LlamaForCausalLM, Trainer, TrainingArguments, TextDataset
-from datasets import Dataset
-import torch
+import subprocess
 
-# === Step 1: Extract Text from PDF ===
-def extract_text_from_pdf(pdf_path):
+# === CONFIG ===
+INPUT_PDF = "PoE_-_SD5_-_SP7_-_Ver.04.24.P.pdf"
+OUTPUT_DIR = "daily_output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# === STEP 1: Extract Text from PDF ===
+def extract_text(pdf_path):
     doc = fitz.open(pdf_path)
-    full_text = "\n".join(page.get_text() for page in doc)
-    return full_text
+    return "\n".join(page.get_text() for page in doc)
 
-# === Step 2: Preprocess the Text ===
-def preprocess_text(text):
-    # Split by SAQA ID or similar headers if pattern known
-    chunks = text.split("SAQA ID")
-    processed = ["SAQA ID" + chunk.strip() for chunk in chunks if chunk.strip()]
-    return processed
+# === STEP 2: Chunk by Unit Standard Titles ===
+def chunk_text_by_unit_standards(text):
+    pattern = r"(Unit standard title:.*?)(?=Unit standard title:|$)"
+    matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+    return matches
 
-# === Step 3: Prepare Dataset ===
-def prepare_dataset(chunks):
-    return Dataset.from_dict({"text": chunks})
+# === STEP 3: Run LLaMA 3 via Ollama to Summarize Text ===
+def summarize_with_llama(chunk):
+    prompt = f"Summarize this training unit for easy learning:\n\n{chunk.strip()}\n\nSummary:"
+    try:
+        result = subprocess.run(
+            ["ollama", "run", "llama3", prompt],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=90
+        )
+        return result.stdout.strip()
+    except Exception as e:
+        return f"[Error] {e}"
 
-# === Step 4: Fine-tune LLaMA 3 ===
-def fine_tune_model(dataset):
-    model_name = "meta-llama/Llama-3-8b"  # HuggingFace-style
-    tokenizer = LlamaTokenizer.from_pretrained(model_name)
-    model = LlamaForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.float16)
+# === STEP 4: Save Output as JSON ===
+def save_output(data, date_str):
+    file_path = os.path.join(OUTPUT_DIR, f"poe_summary_{date_str}.json")
+    with open(file_path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"[✔] Saved summary to {file_path}")
 
-    def tokenize_function(examples):
-        return tokenizer(examples["text"], truncation=True, padding="max_length", max_length=512)
+# === MAIN RUNNER ===
+def run_daily_poe_processing():
+    print("[⏳] Extracting PDF...")
+    raw_text = extract_text(INPUT_PDF)
+    chunks = chunk_text_by_unit_standards(raw_text)
 
-    tokenized_datasets = dataset.map(tokenize_function, batched=True)
-    
-    training_args = TrainingArguments(
-        output_dir="./results",
-        per_device_train_batch_size=2,
-        num_train_epochs=1,
-        logging_dir="./logs",
-        save_strategy="no",
-    )
+    print(f"[🔍] Found {len(chunks)} unit standard sections.")
+    summaries = []
+    for i, chunk in enumerate(chunks):
+        print(f"[🤖] Summarizing chunk {i+1}...")
+        summary = summarize_with_llama(chunk)
+        summaries.append({
+            "unit_index": i + 1,
+            "summary": summary,
+            "original_length": len(chunk)
+        })
 
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_datasets,
-        tokenizer=tokenizer,
-    )
+    today = datetime.date.today().isoformat()
+    save_output(summaries, today)
+    print("[✅] Daily PoE processing complete.")
 
-    trainer.train()
-
-# === Step 5: Main Runner ===
-def run_daily_training():
-    pdf_path = "PoE - SD5 - SP7 - Ver.04.24.P.pdf"
-    text = extract_text_from_pdf(pdf_path)
-    chunks = preprocess_text(text)
-    dataset = prepare_dataset(chunks)
-    fine_tune_model(dataset)
-
-# === Step 6: Scheduler Setup ===
+# === ENTRY POINT ===
 if __name__ == "__main__":
-    print(f"[{datetime.datetime.now()}] Starting daily training...")
-    run_daily_training()
-    print("Training complete.")
+    run_daily_poe_processing()
